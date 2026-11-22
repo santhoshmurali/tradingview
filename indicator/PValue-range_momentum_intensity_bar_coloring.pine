@@ -1,0 +1,124 @@
+//@version=6
+//@description PValue-Range and Momentum Intensity Bar Coloring measures how quickly each range or Renko candle forms. It displays fast, directionally coherent candle groups as bullish or bearish momentum colors, marks unusually slow-forming candles with gold diamonds, and draws a fixed guide below bullish momentum or above bearish momentum bursts. Usage: apply this indicator mainly to range or Renko charts, then tune Signal Threshold to control sensitivity. Lower values show more signals; higher values show only unusual events. Color Momentum Candles enables or disables momentum candle coloring. Mark Long-Forming Candles enables or disables longevity diamonds. Show Momentum Guide Line enables or disables the fixed momentum guide. Formation Baseline Length controls the historical duration and speed comparison window. Momentum Group Length controls the number of recent candles used to measure directional persistence. Signal Threshold controls the minimum score for momentum and longevity signals. Formation Baseline Type selects SMA, EMA, HMA, or WMA for duration and speed baselines. Guide Offset ATR controls the guide distance from the first momentum candle in ATR units. Show Formation Seconds displays elapsed formation time labels. Show Reference Plots exposes longevity, momentum, and coherence scores in the status line. Bullish Momentum sets the bullish candle and guide color. Bearish Momentum sets the bearish candle and guide color. Longevity Marker sets the gold longevity marker color. Duration Label Text sets the formation-time label text color. Signals are confirmed at bar close to avoid live-bar repainting. Use this indicator as a supporting tool, not as the primary basis for trading decisions.
+indicator('PValue-Range and Momentum Intensity Bar Coloring', overlay = true, max_labels_count = 500)
+
+// Momentum is shown with candle colors. Longevity is shown independently with gold diamonds.
+// This keeps both signals visible without stacking many near-identical color levels.
+// Signals are gated by barstate.isconfirmed so live range/Renko bars do not repaint.
+enableMomentumColoring = input.bool(true, 'Color Momentum Candles', group = 'Signal Settings', tooltip = 'Colors only candles that are both fast-forming and directionally coherent.')
+enableLongevityMarkers = input.bool(true, 'Mark Long-Forming Candles', group = 'Signal Settings', tooltip = 'Marks unusually slow-forming candles with a gold diamond.')
+showMomentumGuide = input.bool(true, 'Show Momentum Guide Line', group = 'Signal Settings', tooltip = 'Draws a fixed horizontal guide below bullish momentum or above bearish momentum during each momentum burst.')
+baselineLength = input.int(20, 'Formation Baseline Length', minval = 5, group = 'Signal Settings', tooltip = 'Bars used to measure unusual formation duration and speed.')
+momentumLength = input.int(5, 'Momentum Group Length', minval = 2, group = 'Signal Settings', tooltip = 'Bars used to measure directional persistence.')
+signalThreshold = input.float(1.0, 'Signal Threshold', minval = 0.25, step = 0.25, group = 'Signal Settings', tooltip = 'Higher values produce fewer momentum colors and longevity markers.')
+maType = input.string('EMA', 'Formation Baseline Type', options = ['SMA', 'EMA', 'HMA', 'WMA'], group = 'Signal Settings')
+guideOffset = input.float(0.25, 'Guide Offset ATR', minval = 0.05, step = 0.05, group = 'Signal Settings', tooltip = 'Distance of the momentum guide from the first bar of a momentum burst, measured in ATRs.')
+showDurationLabel = input.bool(false, 'Show Formation Seconds', group = 'Display Settings')
+showReferencePlots = input.bool(false, 'Show Reference Plots', group = 'Display Settings', tooltip = 'Shows the two independent scores in the status line.')
+
+showHelp = input.bool(false, 'Show Help', group = 'Help Panel', tooltip = 'Displays an on-chart description, usage guide, and input reference.')
+helpPosition = input.string(position.top_right, 'Help Location', options = [position.top_left, position.top_center, position.top_right, position.middle_left, position.middle_center, position.middle_right, position.bottom_left, position.bottom_center, position.bottom_right], group = 'Help Panel', tooltip = 'Selects where the on-chart Help table appears.')
+helpTextSize = input.string(size.small, 'Help Text Size', options = [size.tiny, size.small, size.normal], group = 'Help Panel', tooltip = 'Selects the Help table text size.')
+showWarning = input.bool(true, 'Show Trading Warning', group = 'Help Panel', tooltip = 'Shows or hides the supporting-tool warning message.')
+
+momentumBullColor = input.color(#168aad, 'Bullish Momentum', group = 'Color Settings')
+momentumBearColor = input.color(#bb3e03, 'Bearish Momentum', group = 'Color Settings')
+longevityColor = input.color(#d4a017, 'Longevity Marker', group = 'Color Settings')
+labelColor = input.color(#404040, 'Duration Label Text', group = 'Color Settings')
+var table warningTable = table.new(position.bottom_center, 1, 1, border_width = 1)
+var table helpTable = table.new(helpPosition, 2, 12, bgcolor = chart.bg_color, frame_color = chart.fg_color, border_color = chart.fg_color, border_width = 1)
+
+calcMA(source, length, averageType) =>
+    switch averageType
+        'SMA' => ta.sma(source, length)
+        'EMA' => ta.ema(source, length)
+        'HMA' => ta.hma(source, length)
+        'WMA' => ta.wma(source, length)
+        => ta.ema(source, length)
+
+calcZScore(value, mean, deviation) =>
+    not na(value) and not na(mean) and not na(deviation) and deviation > 0 ? (value - mean) / deviation : 0.0
+
+durationSeconds = not na(time[1]) ? math.max((time - time[1]) / 1000.0, 0.001) : na
+durationMean = calcMA(durationSeconds, baselineLength, maType)
+durationDeviation = ta.stdev(durationSeconds, baselineLength)
+longevityScore = math.max(calcZScore(durationSeconds, durationMean, durationDeviation), 0.0)
+
+logFormationSpeed = not na(durationSeconds) ? math.log(1.0 / durationSeconds) : na
+speedMean = calcMA(logFormationSpeed, baselineLength, maType)
+speedDeviation = ta.stdev(logFormationSpeed, baselineLength)
+speedScore = math.max(calcZScore(logFormationSpeed, speedMean, speedDeviation), 0.0)
+
+netTravel = not na(close[momentumLength]) ? math.abs(close - close[momentumLength]) : na
+pathTravel = math.sum(math.abs(close - close[1]), momentumLength)
+efficiency = not na(netTravel) and pathTravel > 0 ? math.min(netTravel / pathTravel, 1.0) : 0.0
+signedBars = math.sum(close >= open ? 1.0 : -1.0, momentumLength)
+directionalBias = math.abs(signedBars) / momentumLength
+coherence = (efficiency + directionalBias) * 0.5
+momentumScore = speedScore * coherence
+
+momentumActive = momentumScore >= signalThreshold and not na(durationSeconds) and barstate.isconfirmed
+longevityActive = longevityScore >= signalThreshold and not na(durationSeconds) and barstate.isconfirmed
+trendUp = signedBars >= 0 and close >= close[momentumLength]
+momentumColor = momentumActive and enableMomentumColoring ? trendUp ? momentumBullColor : momentumBearColor : na
+barcolor(momentumColor)
+
+// Gold diamonds are a separate longevity channel, so a slow candle remains visible even when momentum is absent.
+plotshape(enableLongevityMarkers and longevityActive, title = 'Long-Forming Candle', style = shape.diamond, location = location.abovebar, color = longevityColor, size = size.tiny)
+
+// Capture one guide price per momentum burst and hold it fixed until the burst ends or direction changes.
+atrValue = ta.atr(momentumLength)
+newMomentumBurst = momentumActive and (not momentumActive[1] or trendUp != trendUp[1])
+var float momentumGuide = na
+if barstate.isconfirmed
+    if newMomentumBurst
+        momentumGuide := trendUp ? low - atrValue * guideOffset : high + atrValue * guideOffset
+    else if not momentumActive
+        momentumGuide := na
+
+guideVisible = momentumActive or not barstate.isconfirmed and momentumActive[1]
+plot(showMomentumGuide and guideVisible ? momentumGuide : na, title = 'Momentum Guide', color = trendUp ? momentumBullColor : momentumBearColor, linewidth = 2, style = plot.style_linebr)
+
+if showDurationLabel and not na(durationSeconds) and barstate.isconfirmed
+    label.new(bar_index, high, str.tostring(durationSeconds, '#.##') + 's', color = color.new(color.white, 78), textcolor = labelColor, style = label.style_label_down, size = size.tiny, yloc = yloc.abovebar)
+
+if barstate.islast and showWarning
+    table.cell(warningTable, 0, 0, 'Use this indicator as a supporting tool, not as the primary basis for trading decisions.', text_color = chart.bg_color, bgcolor = color.new(chart.fg_color, 15), text_size = size.small, text_halign = text.align_center)
+else if barstate.islast
+    table.clear(warningTable, 0, 0, 0, 0)
+
+if barstate.islast and showHelp
+    table.cell(helpTable, 0, 0, 'PValue Help', width = 8, text_color = chart.bg_color, bgcolor = chart.fg_color, text_size = helpTextSize, text_halign = text.align_center)
+    table.cell(helpTable, 1, 0, 'Description and configuration guide', width = 22, text_color = chart.bg_color, bgcolor = chart.fg_color, text_size = helpTextSize, text_halign = text.align_center)
+    table.cell(helpTable, 0, 1, 'Purpose', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 1, 'Designed mainly for Range and Renko charts.\nSeparates fast directional printing (Momentum) from unusually slow candle formation (Longevity).', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 2, 'How to use', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 2, 'Start with the defaults.\nLower Signal Threshold for more signals; raise it for only the strongest bursts and longest-forming candles.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 3, 'Momentum\ncolors', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 3, 'Bullish or bearish candle colors require fast formation plus\ndirectional coherence across the Momentum Group Length.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 4, 'Longevity\ndiamonds', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 4, 'Gold diamonds mark candles whose formation duration is unusually long\nrelative to the Formation Baseline Length.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 5, 'Momentum\nGuide', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 5, 'Fixed guide sits below bullish momentum or above bearish momentum.\nGuide Offset ATR controls distance from the burst start.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 6, 'Signal\nSettings', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 6, 'Color Momentum Candles, Mark Long-Forming Candles, and Show Momentum Guide Line control visuals.\nFormation Baseline Length, Momentum Group Length, Signal Threshold, Formation Baseline Type, and Guide Offset ATR control calculations.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 7, 'Display\nSettings', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 7, 'Show Formation Seconds adds elapsed-time labels.\nShow Reference Plots exposes Longevity, Momentum, and Coherence scores in the status line.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 8, 'Color\nSettings', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 8, 'Bullish Momentum and Bearish Momentum color candles and the guide.\nLongevity Marker colors diamonds. Duration Label Text colors time labels.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 9, 'Help\nPanel', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 9, 'Show Help toggles this table. Help Location selects its chart position.\nHelp Text Size selects tiny, small, or normal text. Show Trading Warning toggles the warning.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 10, 'Alerts', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 10, 'Bullish momentum, bearish momentum, and long-formation alerts are available.\nCreate alerts from the indicator menu.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 0, 11, 'Important', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+    table.cell(helpTable, 1, 11, 'Signals are confirmed at bar close to avoid live-bar repainting.\nUse this indicator as a supporting tool, not as the primary basis for trading decisions.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize, text_halign = text.align_left)
+else if barstate.islast
+    table.clear(helpTable, 0, 0, 1, 11)
+
+plot(showReferencePlots ? longevityScore : na, title = 'Longevity Score', color = longevityColor, display = display.status_line)
+plot(showReferencePlots ? momentumScore : na, title = 'Momentum Score', color = color.gray, display = display.status_line)
+plot(showReferencePlots ? coherence : na, title = 'Momentum Coherence', color = momentumBullColor, display = display.status_line)
+
+alertcondition(momentumActive and trendUp, 'Bullish Momentum Burst', 'Bullish momentum burst detected on {{ticker}}.')
+alertcondition(momentumActive and not trendUp, 'Bearish Momentum Burst', 'Bearish momentum burst detected on {{ticker}}.')
+alertcondition(longevityActive, 'Long Formation Detected', 'Unusually long candle formation detected on {{ticker}}.')

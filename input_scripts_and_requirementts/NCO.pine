@@ -1,0 +1,79 @@
+//@version=6
+indicator('Normalized Candles Oscillator', shorttitle = 'NCO', overlay = false)
+
+// Input parameters
+lookback = input.int(50, 'Normalization Lookback Period', minval = 10, maxval = 500, tooltip = 'Period for calculating the highest high and lowest low used for normalization')
+showCandles = input.bool(true, 'Show Candle Bodies', group = 'Display')
+showWicks = input.bool(true, 'Show Wicks', group = 'Display')
+showMidline = input.bool(true, 'Show 50 Midline', group = 'Display')
+showZones = input.bool(true, 'Show Overbought/Oversold Zones', group = 'Display')
+
+// Color inputs
+bullColor = input.color(color.new(#26a69a, 0), 'Bull Candle Color', group = 'Colors')
+bearColor = input.color(color.new(#ef5350, 0), 'Bear Candle Color', group = 'Colors')
+wickColor = input.color(color.new(color.gray, 40), 'Wick Color', group = 'Colors')
+
+// Overbought/Oversold levels
+obLevel = input.int(80, 'Overbought Level', minval = 60, maxval = 95, group = 'Levels')
+osLevel = input.int(20, 'Oversold Level', minval = 5, maxval = 40, group = 'Levels')
+
+// Normalization function (0-100)
+normalize(value, period) =>
+    highest = ta.highest(high, period)
+    lowest = ta.lowest(low, period)
+    priceRange = highest - lowest
+    priceRange == 0 ? 50 : (value - lowest) / priceRange * 100
+
+// Calculate normalized OHLC values
+normOpen = normalize(open, lookback)
+normHigh = normalize(high, lookback)
+normLow = normalize(low, lookback)
+normClose = normalize(close, lookback)
+
+// Determine candle color
+candleColor = normClose >= normOpen ? bullColor : bearColor
+
+// Plot candle bodies using plotcandle
+plotcandle(showCandles ? normOpen : na, showCandles ? normHigh : na, showCandles ? normLow : na, showCandles ? normClose : na, title = 'Normalized Candles', color = candleColor, wickcolor = showWicks ? wickColor : na, bordercolor = candleColor)
+
+// Alternative: Plot as line if candles are disabled
+plot(not showCandles ? normClose : na, 'Normalized Close', color = color.blue, linewidth = 2)
+
+// Reference lines
+hline(100, '100', color = color.new(color.gray, 70), linestyle = hline.style_solid)
+hline(0, '0', color = color.new(color.gray, 70), linestyle = hline.style_solid)
+hline(50, 'Midline', color = showMidline ? color.new(color.yellow, 50) : na, linestyle = hline.style_dashed, linewidth = 1)
+
+// Overbought/Oversold zones
+obLine = hline(obLevel, 'Overbought', color = showZones ? color.new(color.red, 60) : na, linestyle = hline.style_dotted)
+osLine = hline(osLevel, 'Oversold', color = showZones ? color.new(color.green, 60) : na, linestyle = hline.style_dotted)
+
+// Fill zones
+fill(hline(100), obLine, color = showZones ? color.new(color.red, 90) : na, title = 'Overbought Zone')
+fill(osLine, hline(0), color = showZones ? color.new(color.green, 90) : na, title = 'Oversold Zone')
+
+// Optional: Add momentum indicator
+showMomentum = input.bool(false, 'Show Momentum Line', group = 'Additional Features')
+momentumLength = input.int(14, 'Momentum Length', minval = 1, group = 'Additional Features')
+
+momentum = ta.roc(normClose, momentumLength)
+plot(showMomentum ? 50 + momentum : na, 'Momentum', color = color.new(color.orange, 30), linewidth = 1)
+
+// Optional: Divergence detection
+showDivergence = input.bool(false, 'Show Divergence Signals', group = 'Additional Features')
+divLength = input.int(5, 'Divergence Lookback', minval = 3, group = 'Additional Features')
+
+// Bullish divergence: Price makes lower low, oscillator makes higher low
+priceLow = ta.lowest(close, divLength)
+oscLow = ta.lowest(normClose, divLength)
+
+bullDiv = showDivergence and close == priceLow and normClose > oscLow[divLength] and normClose < osLevel + 10
+bearDiv = showDivergence and close == ta.highest(close, divLength) and normClose < ta.highest(normClose, divLength)[divLength] and normClose > obLevel - 10
+
+plotshape(bullDiv, 'Bullish Divergence', shape.triangleup, location.bottom, color = color.new(color.green, 0), size = size.small)
+plotshape(bearDiv, 'Bearish Divergence', shape.triangledown, location.top, color = color.new(color.red, 0), size = size.small)
+
+// Alerts
+alertcondition(ta.cross(normClose, obLevel), 'Overbought Cross', 'Normalized candle crossed into overbought zone')
+alertcondition(ta.cross(osLevel, normClose), 'Oversold Cross', 'Normalized candle crossed into oversold zone')
+alertcondition(ta.cross(normClose, 50), 'Midline Cross', 'Normalized candle crossed the 50 midline')

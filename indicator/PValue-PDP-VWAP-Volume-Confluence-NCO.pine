@@ -1,0 +1,429 @@
+//@version=6
+//@description PValue-PDP-VWAP Volume Confluence [NCO] combines prior-day price liquidation zones, session VWAP deviation bands, relative volume candles, and a Normalized Candles Oscillator confirmation. Signals are confirmed on candle close. Use this indicator as a supporting tool, not as the primary basis for trading decisions.
+indicator('PValue-PDP-VWAP Volume Confluence [NCO]', shorttitle = 'PValue-PDP VWAP NCO', overlay = true, max_boxes_count = 64, max_labels_count = 500)
+
+// Inputs
+string pdpGroup = 'PDP Settings'
+string setupGroup = 'VWAP & NCO Settings'
+string visualGroup = 'Signal Visuals'
+string tableGroup = 'Statistics Table'
+string paletteGroup = 'Color Scheme'
+string helpGroup = 'Help Panel'
+pdpSource = input.string('Close', 'Previous Day Price Source', options = ['Open', 'Close', 'High/Low', '(H+L)/2', '(H+L+C)/3'], group = pdpGroup)
+pdpThreshold = input.float(0.05, 'PDP Threshold (%)', minval = 0.0, maxval = 10.0, step = 0.01, group = pdpGroup)
+pdpVisibility = input.string('Previous Day Only', 'PDP Zone Visibility', options = ['Previous Day Only', 'Past N Days'], group = pdpGroup)
+pastDays = input.int(5, 'Number of Past Days (N)', minval = 1, maxval = 30, group = pdpGroup)
+sdSelection = input.string('1SD', 'VWAP Standard Deviation', options = ['1SD', '2SD', '3SD'], group = setupGroup)
+ncoThreshold = input.float(0.0, 'NCO Threshold', minval = 0.0, maxval = 25.0, step = 0.1, group = setupGroup)
+ncoLookback = input.int(50, 'NCO Normalization Lookback', minval = 10, maxval = 500, group = setupGroup)
+prepareSize = input.string(size.small, 'Prepare Indicator Size', options = [size.tiny, size.small, size.normal, size.large], group = visualGroup)
+entrySize = input.string(size.normal, 'Entry Indicator Size', options = [size.tiny, size.small, size.normal, size.large], group = visualGroup)
+maximumSignalLabels = input.int(500, 'Maximum Signal Labels', minval = 1, maxval = 500, group = visualGroup, tooltip = 'Retains the most recent labels only, preventing TradingView label-limit errors.')
+useCustomColors = input.bool(false, 'Use Custom Signal Colors', group = visualGroup)
+customBull = input.color(#26a69a, 'Bullish Signals', group = visualGroup)
+customBear = input.color(#ef5350, 'Bearish Signals', group = visualGroup)
+
+colorScheme = input.string('Dracula Theme', 'Palette', options = ['Highcharts 5.x', 'Highcharts 3.x', 'Highcharts 2.x', 'Luan', 'R', 'Viridis Color', 'Dracula Theme', 'University of Michigan-Dearborn', 'Red-Yellow-Green', 'Gazeta do Povo', 'Hygge Color Palette', 'Apple iMac 2021 - Front', 'Apple iMac 2021 - Back', 'University of Michigan Well-being', 'Dracula UI', 'Thiago', 'Bootstrap 5.0'], group = paletteGroup, tooltip = 'Palette names and ordered colors mirror ref/palettes.json. Dracula Theme is the default.')
+
+tablePositionInput = input.string('Bottom Right', 'Table Position', options = ['Bottom Right', 'Bottom Left', 'Top Right', 'Top Left', 'Middle Right', 'Middle Left'], group = tableGroup)
+tableTextSize = input.string(size.small, 'Table Text Size', options = [size.tiny, size.small, size.normal, size.large], group = tableGroup)
+period1 = input.timeframe('60', 'Aggregation Period 1', group = tableGroup)
+mode1 = input.string('Current', 'Aggregation Period 1 Mode', options = ['Current', 'Previous'], group = tableGroup)
+period2 = input.timeframe('D', 'Aggregation Period 2', group = tableGroup)
+mode2 = input.string('Current', 'Aggregation Period 2 Mode', options = ['Current', 'Previous'], group = tableGroup)
+period3 = input.timeframe('W', 'Aggregation Period 3', group = tableGroup)
+mode3 = input.string('Current', 'Aggregation Period 3 Mode', options = ['Current', 'Previous'], group = tableGroup)
+period4 = input.timeframe('M', 'Aggregation Period 4', group = tableGroup)
+mode4 = input.string('Current', 'Aggregation Period 4 Mode', options = ['Current', 'Previous'], group = tableGroup)
+
+showHelp = input.bool(false, 'Show Help', group = helpGroup)
+helpLocation = input.string(position.top_right, 'Help Location', options = [position.top_left, position.top_right, position.bottom_left, position.bottom_right], group = helpGroup)
+helpTextSize = input.string(size.small, 'Help Text Size', options = [size.tiny, size.small, size.normal], group = helpGroup)
+showWarning = input.bool(true, 'Show Trading Warning', group = helpGroup)
+
+// Palette mapping. Each branch retains the ordered colors from ref/palettes.json.
+color paletteA = switch colorScheme
+    'Highcharts 5.x' => #7cb5ec
+    'Highcharts 3.x' => #2f7ed8
+    'Highcharts 2.x' => #4572A7
+    'Luan' => #EAEFF2
+    'R' => #9E77A1
+    'Viridis Color' => #340042
+    'Dracula Theme' => #8be9fd
+    'University of Michigan-Dearborn' => #FFC22E
+    'Red-Yellow-Green' => #30c627
+    'Gazeta do Povo' => #00DF87
+    'Hygge Color Palette' => #58504B
+    'Apple iMac 2021 - Front' => #25476d
+    'Apple iMac 2021 - Back' => #a8bed2
+    'University of Michigan Well-being' => #12B492
+    'Dracula UI' => #80ffea
+    'Thiago' => #00DF87
+    => #316CF4
+color paletteB = switch colorScheme
+    'Highcharts 5.x' => #f15c80
+    'Highcharts 3.x' => #910000
+    'Highcharts 2.x' => #AA4643
+    'Luan' => #FF0000
+    'R' => #9A8FBB
+    'Viridis Color' => #fce51e
+    'Dracula Theme' => #ff5555
+    'University of Michigan-Dearborn' => #022441
+    'Red-Yellow-Green' => #fb0007
+    'Gazeta do Povo' => #FC6451
+    'Hygge Color Palette' => #B7BDC0
+    'Apple iMac 2021 - Front' => #b72c31
+    'Apple iMac 2021 - Back' => #eeb8b0
+    'University of Michigan Well-being' => #BB67A9
+    'Dracula UI' => #ff9580
+    'Thiago' => #FC6451
+    => #CB444A
+color paletteC = switch colorScheme
+    'Highcharts 5.x' => #e4d354
+    'Highcharts 3.x' => #8bbc21
+    'Highcharts 2.x' => #89A54E
+    'Luan' => #FFA700
+    'R' => #7ED9B1
+    'Viridis Color' => #5ec747
+    'Dracula Theme' => #f1fa8c
+    'University of Michigan-Dearborn' => #F9F9F9
+    'Red-Yellow-Green' => #fdb409
+    'Gazeta do Povo' => #FFD000
+    'Hygge Color Palette' => #F4F7EA
+    'Apple iMac 2021 - Front' => #d48207
+    'Apple iMac 2021 - Back' => #eaca96
+    'University of Michigan Well-being' => #FECC41
+    'Dracula UI' => #ffca80
+    'Thiago' => #FFD000
+    => #F5C344
+color bullColor = useCustomColors ? customBull : paletteA
+color bearColor = useCustomColors ? customBear : paletteB
+color accentColor = paletteC
+
+// ============================================================================
+// START: NORMALIZED CANDLES OSCILLATOR (NCO) LOGIC
+// ============================================================================
+ncoHighest = ta.highest(high, ncoLookback)
+ncoLowest = ta.lowest(low, ncoLookback)
+ncoRange = ncoHighest - ncoLowest
+normalizeNco(value) => ncoRange == 0 ? 50.0 : (value - ncoLowest) / ncoRange * 100.0
+ncoOpen = normalizeNco(open)
+ncoHigh = normalizeNco(high)
+ncoLow = normalizeNco(low)
+ncoClose = normalizeNco(close)
+// ============================================================================
+// END: NORMALIZED CANDLES OSCILLATOR (NCO) LOGIC
+// ============================================================================
+
+// Non-repainting prior completed daily values.
+pdh = request.security(syminfo.tickerid, 'D', high[1], lookahead = barmerge.lookahead_off)
+pdl = request.security(syminfo.tickerid, 'D', low[1], lookahead = barmerge.lookahead_off)
+pdo = request.security(syminfo.tickerid, 'D', open[1], lookahead = barmerge.lookahead_off)
+pdc = request.security(syminfo.tickerid, 'D', close[1], lookahead = barmerge.lookahead_off)
+pdpMid = (pdh + pdl) * 0.5
+pdpTypical = (pdh + pdl + pdc) / 3.0
+pdpValue = pdpSource == 'Open' ? pdo : pdpSource == 'Close' ? pdc : pdpSource == '(H+L)/2' ? pdpMid : pdpTypical
+pdpPrimary = pdpSource == 'High/Low' ? (math.abs(close - pdh) <= math.abs(close - pdl) ? pdh : pdl) : pdpValue
+pdpUpper = pdpPrimary * (1.0 + pdpThreshold / 100.0)
+pdpLower = pdpPrimary * (1.0 - pdpThreshold / 100.0)
+
+// Daily VWAP and selected population-standard-deviation bands.
+newDay = timeframe.change('D')
+var float sumPV = 0.0
+var float sumV = 0.0
+var float sumPV2 = 0.0
+if newDay
+    sumPV := 0.0
+    sumV := 0.0
+    sumPV2 := 0.0
+typicalPrice = hlc3
+sumPV += typicalPrice * volume
+sumV += volume
+sumPV2 += typicalPrice * typicalPrice * volume
+dailyVwap = ta.vwap(typicalPrice, newDay)
+vwapVariance = sumV > 0 ? math.max(sumPV2 / sumV - dailyVwap * dailyVwap, 0.0) : na
+vwapDeviation = math.sqrt(vwapVariance)
+sdMultiplier = sdSelection == '1SD' ? 1.0 : sdSelection == '2SD' ? 2.0 : 3.0
+upperBand = dailyVwap + vwapDeviation * sdMultiplier
+lowerBand = dailyVwap - vwapDeviation * sdMultiplier
+
+volumeAverage = ta.sma(volume, 20)
+aboveAverage = not na(volumeAverage) and volume > volumeAverage
+candleRange = high - low
+bullStrong = candleRange > 0 and close > open and ((close - open) / candleRange >= 0.85 or (open - low) / candleRange >= 0.65)
+bearStrong = candleRange > 0 and close < open and ((open - close) / candleRange >= 0.85 or (high - open) / candleRange >= 0.65)
+bullAavc = close > open and aboveAverage
+bearAavc = close < open and aboveAverage
+midLow = math.max(0.0, 50.0 - ncoThreshold)
+midHigh = math.min(100.0, 50.0 + ncoThreshold)
+topLow = math.max(0.0, 100.0 - ncoThreshold)
+bottomHigh = math.min(100.0, ncoThreshold)
+shortNcoTouch = (ncoHigh >= midLow and ncoLow <= midHigh) or ncoHigh >= topLow
+longNcoTouch = (ncoHigh >= midLow and ncoLow <= midHigh) or ncoLow <= bottomHigh
+
+shortBias = close <= pdpUpper and close < dailyVwap
+longBias = close >= pdpLower and close > dailyVwap
+shortHighProbability = shortBias and close < lowerBand
+longHighProbability = longBias and close > upperBand
+var bool bearArmed = false
+var bool bullArmed = false
+var bool bearNcoPassed = false
+var bool bullNcoPassed = false
+var int bearRun = 0
+var int bullRun = 0
+var bool bearRunStrong = false
+var bool bullRunStrong = false
+bearPrepare = false
+bullPrepare = false
+bearEntry = false
+bullEntry = false
+if barstate.isconfirmed
+    if bearArmed and (close > dailyVwap or close > pdpUpper or ncoLow <= bottomHigh)
+        bearArmed := false
+        bearNcoPassed := false
+        bearRun := 0
+        bearRunStrong := false
+    if bullArmed and (close < dailyVwap or close < pdpLower or ncoHigh >= topLow)
+        bullArmed := false
+        bullNcoPassed := false
+        bullRun := 0
+        bullRunStrong := false
+    if shortBias and bullAavc and not bearArmed
+        bearPrepare := true
+        bearArmed := true
+        bearNcoPassed := shortNcoTouch
+        bearRun := 0
+        bearRunStrong := false
+    if longBias and bearAavc and not bullArmed
+        bullPrepare := true
+        bullArmed := true
+        bullNcoPassed := longNcoTouch
+        bullRun := 0
+        bullRunStrong := false
+    if bearArmed
+        bearNcoPassed := bearNcoPassed or shortNcoTouch
+        bearRun := bearAavc ? bearRun + 1 : 0
+        bearRunStrong := bearAavc ? (bearRunStrong or bearStrong) : false
+        if bearNcoPassed and bearRun >= 2 and bearRunStrong
+            bearEntry := true
+            bearArmed := false
+            bearNcoPassed := false
+            bearRun := 0
+            bearRunStrong := false
+    if bullArmed
+        bullNcoPassed := bullNcoPassed or longNcoTouch
+        bullRun := bullAavc ? bullRun + 1 : 0
+        bullRunStrong := bullAavc ? (bullRunStrong or bullStrong) : false
+        if bullNcoPassed and bullRun >= 2 and bullRunStrong
+            bullEntry := true
+            bullArmed := false
+            bullNcoPassed := false
+            bullRun := 0
+            bullRunStrong := false
+
+// Current PDP plot and bounded daily-zone history.
+plot(pdpSource == 'High/Low' ? pdh : pdpValue, 'PDP / PDH', color = accentColor, linewidth = 2, style = plot.style_stepline)
+plot(pdpSource == 'High/Low' ? pdl : na, 'PDL', color = accentColor, linewidth = 2, style = plot.style_stepline)
+zoneTop = plot(pdpSource == 'High/Low' ? na : pdpUpper, 'PDP Upper Zone', color = color.new(accentColor, 100), style = plot.style_stepline)
+zoneBottom = plot(pdpSource == 'High/Low' ? na : pdpLower, 'PDP Lower Zone', color = color.new(accentColor, 100), style = plot.style_stepline)
+fill(zoneTop, zoneBottom, color = color.new(accentColor, 88), title = 'PDP Liquidation Zone')
+plot(dailyVwap, 'Daily VWAP', color = paletteA, linewidth = 2)
+plot(upperBand, 'Upper VWAP SD', color = color.new(paletteA, 35))
+plot(lowerBand, 'Lower VWAP SD', color = color.new(paletteA, 35))
+
+var box[] pdpBoxes = array.new_box()
+if newDay and not na(pdpPrimary)
+    if pdpVisibility == 'Previous Day Only'
+        while array.size(pdpBoxes) > 0
+            box.delete(array.shift(pdpBoxes))
+    float boxLevel = pdpSource == 'High/Low' ? pdh : pdpPrimary
+    box newBox = box.new(time, boxLevel * (1 + pdpThreshold / 100.0), time, boxLevel * (1 - pdpThreshold / 100.0), xloc = xloc.bar_time, bgcolor = color.new(accentColor, 88), border_color = color.new(accentColor, 35))
+    array.push(pdpBoxes, newBox)
+    if pdpSource == 'High/Low'
+        box secondBox = box.new(time, pdl * (1 + pdpThreshold / 100.0), time, pdl * (1 - pdpThreshold / 100.0), xloc = xloc.bar_time, bgcolor = color.new(accentColor, 88), border_color = color.new(accentColor, 35))
+        array.push(pdpBoxes, secondBox)
+while array.size(pdpBoxes) > (pdpVisibility == 'Past N Days' ? pastDays * (pdpSource == 'High/Low' ? 2 : 1) : (pdpSource == 'High/Low' ? 2 : 1))
+    box.delete(array.shift(pdpBoxes))
+if array.size(pdpBoxes) > 0
+    box.set_right(array.get(pdpBoxes, array.size(pdpBoxes) - 1), time)
+    if pdpSource == 'High/Low' and array.size(pdpBoxes) > 1
+        box.set_right(array.get(pdpBoxes, array.size(pdpBoxes) - 2), time)
+
+// Labels preserve user-selectable sizes without consuming the finite plot budget.
+var label[] signalLabels = array.new_label()
+createSignalLabel(signal, signalPrice, signalText, signalColor, signalStyle, signalSize) =>
+    if signal
+        label newSignalLabel = label.new(bar_index, signalPrice, signalText, color = signalColor, textcolor = chart.bg_color, style = signalStyle, size = signalSize)
+        array.push(signalLabels, newSignalLabel)
+        if array.size(signalLabels) > maximumSignalLabels
+            label.delete(array.shift(signalLabels))
+
+signalAtr = ta.atr(14)
+signalOffset = na(signalAtr) ? math.max(high - low, syminfo.mintick * 10) : signalAtr * 0.25
+createSignalLabel(bearPrepare, high + signalOffset, 'PREP', bearColor, label.style_label_down, prepareSize)
+createSignalLabel(bearEntry, high + signalOffset, 'SE', bearColor, label.style_arrowdown, entrySize)
+createSignalLabel(bearEntry and shortHighProbability, high + signalOffset * 2.0, '◆', accentColor, label.style_diamond, prepareSize)
+createSignalLabel(bullPrepare, low - signalOffset, 'PREP', bullColor, label.style_label_up, prepareSize)
+createSignalLabel(bullEntry, low - signalOffset, 'LE', bullColor, label.style_arrowup, entrySize)
+createSignalLabel(bullEntry and longHighProbability, low - signalOffset * 2.0, '◆', accentColor, label.style_diamond, prepareSize)
+
+// Four independently rolled counters provide Current or Previous counts without repainting.
+var int p1BP = 0
+var int p1BE = 0
+var int p1SP = 0
+var int p1SE = 0
+var int p1PrevBP = 0
+var int p1PrevBE = 0
+var int p1PrevSP = 0
+var int p1PrevSE = 0
+var int p2BP = 0
+var int p2BE = 0
+var int p2SP = 0
+var int p2SE = 0
+var int p2PrevBP = 0
+var int p2PrevBE = 0
+var int p2PrevSP = 0
+var int p2PrevSE = 0
+var int p3BP = 0
+var int p3BE = 0
+var int p3SP = 0
+var int p3SE = 0
+var int p3PrevBP = 0
+var int p3PrevBE = 0
+var int p3PrevSP = 0
+var int p3PrevSE = 0
+var int p4BP = 0
+var int p4BE = 0
+var int p4SP = 0
+var int p4SE = 0
+var int p4PrevBP = 0
+var int p4PrevBE = 0
+var int p4PrevSP = 0
+var int p4PrevSE = 0
+roll1 = timeframe.change(period1)
+roll2 = timeframe.change(period2)
+roll3 = timeframe.change(period3)
+roll4 = timeframe.change(period4)
+if roll1
+    p1PrevBP := p1BP
+    p1PrevBE := p1BE
+    p1PrevSP := p1SP
+    p1PrevSE := p1SE
+    p1BP := 0
+    p1BE := 0
+    p1SP := 0
+    p1SE := 0
+if roll2
+    p2PrevBP := p2BP
+    p2PrevBE := p2BE
+    p2PrevSP := p2SP
+    p2PrevSE := p2SE
+    p2BP := 0
+    p2BE := 0
+    p2SP := 0
+    p2SE := 0
+if roll3
+    p3PrevBP := p3BP
+    p3PrevBE := p3BE
+    p3PrevSP := p3SP
+    p3PrevSE := p3SE
+    p3BP := 0
+    p3BE := 0
+    p3SP := 0
+    p3SE := 0
+if roll4
+    p4PrevBP := p4BP
+    p4PrevBE := p4BE
+    p4PrevSP := p4SP
+    p4PrevSE := p4SE
+    p4BP := 0
+    p4BE := 0
+    p4SP := 0
+    p4SE := 0
+if bullPrepare
+    p1BP += 1
+    p2BP += 1
+    p3BP += 1
+    p4BP += 1
+if bullEntry
+    p1BE += 1
+    p2BE += 1
+    p3BE += 1
+    p4BE += 1
+if bearPrepare
+    p1SP += 1
+    p2SP += 1
+    p3SP += 1
+    p4SP += 1
+if bearEntry
+    p1SE += 1
+    p2SE += 1
+    p3SE += 1
+    p4SE += 1
+
+tablePosition = tablePositionInput == 'Bottom Left' ? position.bottom_left : tablePositionInput == 'Top Right' ? position.top_right : tablePositionInput == 'Top Left' ? position.top_left : tablePositionInput == 'Middle Right' ? position.middle_right : tablePositionInput == 'Middle Left' ? position.middle_left : position.bottom_right
+var table statsTable = table.new(tablePosition, 5, 7, border_width = 1)
+var table warningTable = table.new(position.bottom_center, 1, 1, border_width = 1)
+var table helpTable = table.new(helpLocation, 2, 4, border_width = 1)
+formatPercent(numerator, denominator) => denominator > 0 ? str.tostring(numerator * 100.0 / denominator, '#.0') + '%' : '0.0%'
+if barstate.islast
+    int c1BP = mode1 == 'Current' ? p1BP : p1PrevBP
+    int c1BE = mode1 == 'Current' ? p1BE : p1PrevBE
+    int c1SP = mode1 == 'Current' ? p1SP : p1PrevSP
+    int c1SE = mode1 == 'Current' ? p1SE : p1PrevSE
+    int c2BP = mode2 == 'Current' ? p2BP : p2PrevBP
+    int c2BE = mode2 == 'Current' ? p2BE : p2PrevBE
+    int c2SP = mode2 == 'Current' ? p2SP : p2PrevSP
+    int c2SE = mode2 == 'Current' ? p2SE : p2PrevSE
+    int c3BP = mode3 == 'Current' ? p3BP : p3PrevBP
+    int c3BE = mode3 == 'Current' ? p3BE : p3PrevBE
+    int c3SP = mode3 == 'Current' ? p3SP : p3PrevSP
+    int c3SE = mode3 == 'Current' ? p3SE : p3PrevSE
+    int c4BP = mode4 == 'Current' ? p4BP : p4PrevBP
+    int c4BE = mode4 == 'Current' ? p4BE : p4PrevBE
+    int c4SP = mode4 == 'Current' ? p4SP : p4PrevSP
+    int c4SE = mode4 == 'Current' ? p4SE : p4PrevSE
+    table.cell(statsTable, 0, 0, 'Signals', width = 6, text_color = chart.bg_color, bgcolor = accentColor, text_size = tableTextSize)
+    table.cell(statsTable, 1, 0, mode1 + ' ' + period1, width = 6, text_color = chart.bg_color, bgcolor = accentColor, text_size = tableTextSize)
+    table.cell(statsTable, 2, 0, mode2 + ' ' + period2, width = 6, text_color = chart.bg_color, bgcolor = accentColor, text_size = tableTextSize)
+    table.cell(statsTable, 3, 0, mode3 + ' ' + period3, width = 6, text_color = chart.bg_color, bgcolor = accentColor, text_size = tableTextSize)
+    table.cell(statsTable, 4, 0, mode4 + ' ' + period4, width = 6, text_color = chart.bg_color, bgcolor = accentColor, text_size = tableTextSize)
+    table.cell(statsTable, 0, 1, 'Bull Prepare', width = 6, text_color = bullColor, bgcolor = chart.bg_color, text_size = tableTextSize)
+    table.cell(statsTable, 0, 2, 'Bull Entry', width = 6, text_color = bullColor, bgcolor = chart.bg_color, text_size = tableTextSize)
+    table.cell(statsTable, 0, 3, 'Bull Conv.', width = 6, text_color = bullColor, bgcolor = chart.bg_color, text_size = tableTextSize)
+    table.cell(statsTable, 0, 4, 'Bear Prepare', width = 6, text_color = bearColor, bgcolor = chart.bg_color, text_size = tableTextSize)
+    table.cell(statsTable, 0, 5, 'Bear Entry', width = 6, text_color = bearColor, bgcolor = chart.bg_color, text_size = tableTextSize)
+    table.cell(statsTable, 0, 6, 'Bear Conv.', width = 6, text_color = bearColor, bgcolor = chart.bg_color, text_size = tableTextSize)
+    for col = 1 to 4
+        int bp = col == 1 ? c1BP : col == 2 ? c2BP : col == 3 ? c3BP : c4BP
+        int be = col == 1 ? c1BE : col == 2 ? c2BE : col == 3 ? c3BE : c4BE
+        int sp = col == 1 ? c1SP : col == 2 ? c2SP : col == 3 ? c3SP : c4SP
+        int se = col == 1 ? c1SE : col == 2 ? c2SE : col == 3 ? c3SE : c4SE
+        table.cell(statsTable, col, 1, str.tostring(bp), width = 6, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = tableTextSize)
+        table.cell(statsTable, col, 2, str.tostring(be), width = 6, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = tableTextSize)
+        table.cell(statsTable, col, 3, formatPercent(be, bp), width = 6, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = tableTextSize)
+        table.cell(statsTable, col, 4, str.tostring(sp), width = 6, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = tableTextSize)
+        table.cell(statsTable, col, 5, str.tostring(se), width = 6, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = tableTextSize)
+        table.cell(statsTable, col, 6, formatPercent(se, sp), width = 6, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = tableTextSize)
+    if showWarning
+        table.cell(warningTable, 0, 0, 'Use this indicator as a supporting tool, not as the primary basis for trading decisions.', width = 30, text_color = chart.bg_color, bgcolor = color.new(accentColor, 10), text_size = size.small, text_halign = text.align_center)
+    else
+        table.clear(warningTable, 0, 0, 0, 0)
+    if showHelp
+        table.cell(helpTable, 0, 0, 'PValue Help', width = 8, text_color = chart.bg_color, bgcolor = accentColor, text_size = helpTextSize)
+        table.cell(helpTable, 1, 0, 'PDP VWAP Volume Confluence [NCO]', width = 22, text_color = chart.bg_color, bgcolor = accentColor, text_size = helpTextSize)
+        table.cell(helpTable, 0, 1, 'Purpose', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize)
+        table.cell(helpTable, 1, 1, 'Combines prior-day zones, daily VWAP bands, relative volume, and normalized price confirmation.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize)
+        table.cell(helpTable, 0, 2, 'Use', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize)
+        table.cell(helpTable, 1, 2, 'Prepare marks a pullback. Entry needs two relative-volume continuation candles and an NCO threshold test.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize)
+        table.cell(helpTable, 0, 3, 'Inputs', width = 8, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize)
+        table.cell(helpTable, 1, 3, 'PDP controls prior-day liquidation zones. VWAP SD selects confluence bands. NCO Threshold widens 0/50/100 tests.', width = 22, text_color = chart.fg_color, bgcolor = chart.bg_color, text_size = helpTextSize)
+    else
+        table.clear(helpTable, 0, 0, 1, 3)
+
+alertcondition(bullPrepare, 'Bullish Prepare', 'Bullish prepare on {{ticker}}.')
+alertcondition(bullEntry, 'Bullish Entry', 'Bullish entry on {{ticker}}.')
+alertcondition(bullEntry and longHighProbability, 'High-Probability Bullish Entry', 'High-probability bullish entry on {{ticker}}.')
+alertcondition(bearPrepare, 'Bearish Prepare', 'Bearish prepare on {{ticker}}.')
+alertcondition(bearEntry, 'Bearish Entry', 'Bearish entry on {{ticker}}.')
+alertcondition(bearEntry and shortHighProbability, 'High-Probability Bearish Entry', 'High-probability bearish entry on {{ticker}}.')

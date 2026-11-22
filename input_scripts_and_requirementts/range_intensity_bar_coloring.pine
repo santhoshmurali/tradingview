@@ -1,0 +1,141 @@
+//@version=6
+indicator('Range Intensity Bar Coloring', overlay = true)
+
+// ==================== INPUT SCREEN ====================
+enableRangeColoring = input.bool(true, 'Enable Range Intensity Bar Colouring', group = 'Range Intensity Settings')
+plotLineChart = input.bool(true, 'Plot Line Chart', group = 'Range Intensity Settings')
+showDurationLabel = input.bool(true, 'Show Duration Label Above Bars', group = 'Range Intensity Settings')
+maLength = input.int(20, 'MA Length of Duration Difference', minval = 1, group = 'Range Intensity Settings')
+maType = input.string('SMA', 'MA Type', options = ['SMA', 'EMA', 'HMA', 'WMA'], group = 'Range Intensity Settings')
+
+// Color Inputs
+bearishIntenseColor = input.color(#780000, 'Bearish - Intense Range Color', group = 'Color Settings')
+bullishIntenseColor = input.color(#344e41, 'Bullish - Intense Range Color', group = 'Color Settings')
+bearishModerateColor = input.color(#e63946, 'Bearish - Moderate Range Color', group = 'Color Settings')
+bullishModerateColor = input.color(#588157, 'Bullish - Moderate Range Color', group = 'Color Settings')
+bearishNormalColor = input.color(#dc2f02, 'Bearish - Normal Range Color', group = 'Color Settings')
+bullishNormalColor = input.color(#a3b18a, 'Bullish - Normal Range Color', group = 'Color Settings')
+bearishFlatColor = input.color(#e85d04, 'Bearish - Flat Range Color', group = 'Color Settings')
+bullishFlatColor = input.color(#ccd5ae, 'Bullish - Flat Range Color', group = 'Color Settings')
+
+labelColor = input.color(#a3b18a, 'Label Color', group = 'Color Settings')
+
+// ==================== FUNCTIONS ====================
+// Function to calculate different MA types
+calcMA(source, length, type) =>
+    switch type
+        'SMA' => ta.sma(source, length)
+        'EMA' => ta.ema(source, length)
+        'HMA' => ta.hma(source, length)
+        'WMA' => ta.wma(source, length)
+        => ta.sma(source, length)
+
+// Function to calculate Z-Score
+calcZScore(value, mean, stdev) =>
+    stdev != 0 ? (value - mean) / stdev : 0
+
+// Function to convert seconds to mm:ss format
+formatDuration(seconds, format_needed) =>
+    if format_needed
+        minutes = math.floor(seconds / 60)
+        secs = math.floor(seconds % 60)
+        minutesStr = str.tostring(minutes)
+        secsStr = secs < 10 ? '0' + str.tostring(secs) : str.tostring(secs)
+        minutesStr + ':' + secsStr
+    else
+        str.tostring(math.ceil(seconds))
+
+// ==================== MAIN LOGIC ====================
+// Calculate duration difference between current bar and previous bar
+currentBarTime = time
+previousBarTime = time[1]
+durationDiff = not na(previousBarTime) ? (currentBarTime - previousBarTime) / 1000.0 : 0 // Convert to seconds
+
+// Calculate MA of Duration Difference
+maDuration = calcMA(durationDiff, maLength, maType)
+
+// Calculate Standard Deviation for Z-Score
+stdevDuration = ta.stdev(durationDiff, maLength)
+
+// Calculate Z-Score
+zScore = calcZScore(durationDiff, maDuration, stdevDuration)
+
+// Determine if bar is bullish or bearish
+isBullish = close >= open
+
+// ==================== BAR COLORING LOGIC ====================
+// Determine color based on Z-Score and bar type
+barColor = if enableRangeColoring
+    if math.abs(zScore) > 3
+        isBullish ? bullishIntenseColor : bearishIntenseColor
+    else if math.abs(zScore) > 2
+        isBullish ? bullishModerateColor : bearishModerateColor
+    else if math.abs(zScore) > 1
+        isBullish ? bullishNormalColor : bearishNormalColor
+    else
+        isBullish ? bullishFlatColor : bearishFlatColor
+else
+    na
+
+// Apply bar coloring
+barcolor(barColor)
+
+// ==================== DURATION LABELS ====================
+// Display duration difference above each bar
+if showDurationLabel and not na(durationDiff) and durationDiff > 0
+    durationText = formatDuration(durationDiff, false)
+
+// Determine label color based on intensity
+// labelColor = if math.abs(zScore) > 3
+//     isBullish ? bullishIntenseColor : bearishIntenseColor
+// else if math.abs(zScore) > 2
+//     isBullish ? bullishModerateColor : bearishModerateColor
+// else if math.abs(zScore) > 1
+//     isBullish ? bullishNormalColor : bearishNormalColor
+// else
+//     isBullish ? bullishFlatColor : bearishFlatColor
+
+
+
+    label.new(bar_index, high, durationText, color = color.new(#d6d6d6, 56), textcolor = labelColor, style = label.style_label_down, size = size.small, yloc = yloc.abovebar) // Transparent background textcolor=labelColor, style=label.style_label_down, size=size.small, yloc=yloc.abovebar)
+
+// ==================== PLOTTING ====================
+// Plot duration difference as line chart if enabled
+plot(plotLineChart ? durationDiff : na, title = 'Duration Difference', color = color.blue, linewidth = 1, style = plot.style_line, display = display.status_line)
+
+// Plot MA of duration difference
+plot(plotLineChart ? maDuration : na, title = 'MA Duration', color = color.orange, linewidth = 1, style = plot.style_line, display = display.status_line)
+
+// Plot Z-Score for reference
+plot(plotLineChart ? zScore : na, title = 'Z-Score', color = color.purple, linewidth = 1, style = plot.style_line, display = display.status_line)
+
+// ==================== INFORMATION TABLE ====================
+// Create table to display current values
+var table infoTable = table.new(position.top_right, 4, 3, border_width = 1)
+
+if barstate.islast and enableRangeColoring
+    table.cell(infoTable, 0, 0, 'Duration (sec):', text_color = color.white, bgcolor = color.gray)
+    table.cell(infoTable, 1, 0, str.tostring(durationDiff, '#.##'), text_color = color.white, bgcolor = color.gray)
+    table.cell(infoTable, 2, 0, 'Z-Score:', text_color = color.white, bgcolor = color.gray)
+    table.cell(infoTable, 3, 0, str.tostring(zScore, '#.##'), text_color = color.white, bgcolor = color.gray)
+
+    // Display duration in mm:ss format
+    table.cell(infoTable, 0, 1, 'Duration (mm:ss):', text_color = color.white, bgcolor = color.gray)
+    table.cell(infoTable, 1, 1, formatDuration(durationDiff, false), text_color = color.white, bgcolor = color.gray)
+    table.cell(infoTable, 2, 1, 'MA Duration:', text_color = color.white, bgcolor = color.gray)
+    table.cell(infoTable, 3, 1, str.tostring(maDuration, '#.##'), text_color = color.white, bgcolor = color.gray)
+
+    // Display intensity level
+    intensityLevel = math.abs(zScore) > 3 ? 'Intense' : math.abs(zScore) > 2 ? 'Moderate' : math.abs(zScore) > 1 ? 'Normal' : 'Flat'
+
+    table.cell(infoTable, 0, 2, 'Intensity:', text_color = color.white, bgcolor = color.gray)
+    table.cell(infoTable, 1, 2, intensityLevel, text_color = color.white, bgcolor = color.gray)
+    table.cell(infoTable, 2, 2, 'Bar Type:', text_color = color.white, bgcolor = color.gray)
+    table.cell(infoTable, 3, 2, isBullish ? 'Bullish' : 'Bearish', text_color = color.white, bgcolor = color.gray)
+
+// ==================== ALERTS ====================
+// Alert conditions for intense ranges
+alertcondition(math.abs(zScore) > 3, title = 'Intense Range Detected', message = 'Intense range activity detected with Z-Score: {{plot_2}}')
+alertcondition(math.abs(zScore) > 2 and math.abs(zScore) <= 3, title = 'Moderate Range Detected', message = 'Moderate range activity detected with Z-Score: {{plot_2}}')
+alertcondition(math.abs(zScore) > 1 and math.abs(zScore) <= 2, title = 'Normal Range Detected', message = 'Normal range activity detected with Z-Score: {{plot_2}}')
+alertcondition(math.abs(zScore) <= 1, title = 'Flat Range Detected', message = 'Flat range activity detected with Z-Score: {{plot_2}}')
