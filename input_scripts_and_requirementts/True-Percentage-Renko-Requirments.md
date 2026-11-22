@@ -4,7 +4,7 @@
 
 Build a production-ready TradingView Pine Script v6 overlay indicator named `PValue-True Percentage Renko`, with short title `PValue-True % Renko`. The indicator draws confirmed Renko-style bricks over a standard time-based chart. It supports compounding percentage bricks, fixed-price bricks, ATR-sized bricks, and standard-deviation-sized bricks without using TradingView's built-in Renko chart type.
 
-The script must use `overlay = true`, `max_boxes_count = 500`, and `max_labels_count = 500`. It is an indicator only: do not add trade orders, buy/sell signals, alert conditions, or decorative statistics panels.
+The script must use `overlay = true`, `max_boxes_count = 500`, and `max_labels_count = 500`. It is an indicator only: do not add trade orders, buy/sell signals, or alert conditions. Its candle-count statistics panel is the sole requested analytical table.
 
 ## Calculation and Confirmation Rules
 
@@ -62,25 +62,44 @@ Percentage mode uses a symmetric logarithmic grid and is the default. Absolute m
 - `Label Text Size`: default `tiny`; options `tiny`, `small`, and `normal`.
 - `Show Trading Warning`: boolean, default `true`.
 
+### Statistics
+
+- `Show Statistics`: boolean, default `true`.
+- `Lookback Renko Boxes`: integer, default `50`, range `1` through `500`; uses the most recent completed boxes.
+- `Number of Bins`: integer, default `7`, range `1` through `50`; it is the maximum equal-width bin count.
+- `Statistics Table Width (%)`: integer, default `20`, range `20` through `40`; total chart-pane width allocated to the table, split 50% to candle range and 25% each to frequency and probability.
+- `Statistics Location`: default `Bottom Right`; options `Top Left`, `Top Center`, `Top Right`, `Center Left`, `Center Center`, `Center Right`, `Bottom Left`, `Bottom Center`, and `Bottom Right`.
+- `Statistics Text Size`: default `small`; options `tiny`, `small`, and `normal`.
+
+The candle-count distribution pools bullish and bearish completed boxes. Store each brick's start bar, completion bar, candle count, and direction in a UDT. A box's completed count includes every time-based candle from its start bar through the bar immediately before the next box begins, irrespective of where candle prices fall relative to the box. Multiple bricks created on the same chart bar share the same eventual candle count.
+
+For the available completed sample, calculate its minimum and maximum candle counts and divide the inclusive integer range into equal-width, non-overlapping bins. Use `min(Number of Bins, maximum - minimum + 1)` effective bins to avoid zero-width ranges. Display each bin as an accurate whole-candle interval, rounding its lower edge up and its upper edge down. Frequency is the number of completed boxes in each bin; probability is `frequency / sample size`. If fewer than the requested lookback are available, use all available completed boxes. If none are available, show a waiting state.
+
+The current developing box includes the current chart candle. Map its candle count to the completed-sample bins and show its historical bin probability. Clamp counts below or above the completed-sample range to the nearest bin.
+
 ### Color Scheme and Help
 
 - Provide the existing `Color Scheme` group and `Palette` selector. Its options must remain synchronized with `ref/palettes.json`; `Highcharts 5.x` is the default.
-- Apply the active palette consistently to bullish and bearish brick colors, labels, candle dimming, Help panel, and warning panel.
-- Provide `Show Help`, default `false`; `Help Location`, default `Top Right`; and `Help Text Size`, default `small`.
+- Apply the active palette consistently to bullish and bearish brick colors, labels, candle dimming, Help panel, warning panel, and statistics table.
+- Provide `Show Help`, default `false`; `Help Location`, default `Top Right`, with the same nine table-position options as Statistics Location; and `Help Text Size`, default `small`.
 
 ## Rendering and Retention
 
 - Draw every brick with `box.new()` on the main price chart from its open/close range, using a solid border and the configured fill opacity.
 - Retain each newly formed box as the active segment until the next chart bar, extending its right edge to the current bar. When a new bar begins, close the prior active segment at that bar and begin a new one.
 - Keep at most 500 brick boxes and 500 labels, deleting the oldest retained object after the limit is exceeded.
+- Keep at most 500 completed box-duration records, deleting the oldest record after the limit is exceeded.
 - When enabled, labels must show the brick close using `format.mintick` and its signed percentage move `((close - open) / open) * 100`. Place labels at the close, above bullish bricks and below bearish bricks.
 - Use `barcolor()` for dimmed or hidden standard candles. Hidden candles use a fully transparent color; chart settings may still control border/wick visibility.
 - Display the exact, toggleable warning text: `Use this indicator as a supporting tool, not as the primary basis for trading decisions.` Render it in a theme-readable palette-derived table at the bottom center.
 - Render the optional Help panel only on the last bar. It must use the selected location and text size, palette-derived readable colors, and an explicit width of 30% of the chart pane.
+- Render the optional statistics table only on the last bar. It must contain candle-count range, frequency, and probability columns plus a current-box row, use palette-derived readable colors, and have explicit cell widths totaling the configured Statistics Table Width (%), 20% by default. Highlight the current-box row with the palette accent color and every tied highest-probability bin row with the palette bullish color. Color the current Probability cell bullish when its bin is tied for the highest occupied frequency, bearish when it is tied for the lowest occupied frequency, and accent when it lies between those frequencies or all occupied bins have equal frequency.
+- Add a `Direction Mix` subheader and summary row using the same completed-box lookback. Show bullish-box count, bearish-box count, and the bullish-to-bearish ratio. Use distinct palette-derived bullish, bearish, and accent backgrounds for those three summary cells. Color the B/B ratio bullish above 1, bearish below 1, and accent at exactly 1; show an infinite bullish ratio when there are no bearish boxes.
 
 ## Engineering Constraints
 
 - Begin with `//@version=6` and use explicit Pine types where appropriate.
+- Define the box-duration UDT before calculations and cache array sizes before loops.
 - Do not split ternary expressions across lines or call plotting functions in local scope.
 - Keep all loop boundaries cached before iterating arrays.
 - Use `na` guards before operating on adaptive box sizes.
