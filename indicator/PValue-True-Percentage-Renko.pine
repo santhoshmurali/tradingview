@@ -1,5 +1,5 @@
 //@version=6
-indicator("PValue-True Percentage Renko", shorttitle = "PValue-True % Renko", overlay = true, max_boxes_count = 500, max_labels_count = 500)
+indicator("PValue-True Percentage Renko", shorttitle = "PValue-True % Renko", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // Bricks are finalized only when their source bar closes. Percentage mode uses a symmetric logarithmic grid; the other modes use price-distance grids.
 string calculationGroup = "Calculation"
@@ -7,6 +7,7 @@ string displayGroup = "Display"
 string colorSchemeGroup = "Color Scheme"
 string helpGroup = "Help"
 string statisticsGroup = "Statistics"
+string midpointGuideGroup = "Midpoint Guides"
 
 type RenkoBoxRecord
     int startBar
@@ -29,10 +30,15 @@ bool showBrickLabels = input.bool(false, "Show Brick Price & % Labels", group = 
 string labelTextSizeInput = input.string("tiny", "Label Text Size", options = ["tiny", "small", "normal"], group = displayGroup)
 bool showWarning = input.bool(true, "Show Trading Warning", group = displayGroup)
 string colorScheme = input.string("Highcharts 5.x", "Palette", options = ["Highcharts 5.x", "Highcharts 3.x", "Highcharts 2.x", "Luan", "R", "Viridis Color", "Dracula Theme", "University of Michigan-Dearborn", "Red-Yellow-Green", "Gazeta do Povo", "Hygge Color Palette", "Apple iMac 2021 - Front", "Apple iMac 2021 - Back", "University of Michigan Well-being", "Dracula UI", "Thiago", "Bootstrap 5.0"], group = colorSchemeGroup, tooltip = "Palette names and ordered color values are synchronized with ref/palettes.json.")
+bool showMidpointGuides = input.bool(true, "Show Midpoint Guides", group = midpointGuideGroup, tooltip = "Draws a dotted guide at the arithmetic midpoint of each retained Renko box, including the developing box.")
+int midpointGuideBoxCount = input.int(10, "Midpoint Guide Box Count", minval = 1, maxval = 500, group = midpointGuideGroup, tooltip = "Total retained midpoint guides, including the developing box. It is raised to the Statistics lookback when that value is larger.")
+int midpointGuideLineWidth = input.int(1, "Midpoint Line Width", minval = 1, maxval = 4, group = midpointGuideGroup)
+int midpointGuideLineOpacity = input.int(25, "Midpoint Line Opacity (%)", minval = 0, maxval = 100, group = midpointGuideGroup, tooltip = "0 is fully opaque and 100 is fully transparent.")
 bool showStatistics = input.bool(true, "Show Statistics", group = statisticsGroup, tooltip = "Shows the completed-box candle-count distribution and the current box's matching historical probability.")
 int statisticsLookback = input.int(50, "Lookback Renko Boxes", minval = 1, maxval = 500, group = statisticsGroup, tooltip = "Number of most recent completed Renko boxes used for the candle-count distribution.")
 int statisticsBins = input.int(7, "Number of Bins", minval = 1, maxval = 50, group = statisticsGroup, tooltip = "Maximum number of equal-width candle-count bins. Fewer bins are used when the completed sample has fewer distinct candle counts.")
-int statisticsTableWidth = input.int(20, "Statistics Table Width (%)", minval = 20, maxval = 40, group = statisticsGroup, tooltip = "Total statistics table width as a percentage of the chart pane. The candle-range, frequency, and probability columns split this width 50%, 25%, and 25%.")
+int statisticsTableWidth = input.int(20, "Statistics Table Width (%)", minval = 5, maxval = 40, group = statisticsGroup, tooltip = "Total statistics table width as a percentage of the chart pane. The candle-range, frequency, and probability columns split this width 50%, 25%, and 25%.")
+string statisticsTableTitle = input.string("Renko Statistics", "Statistics Table Title", group = statisticsGroup, tooltip = "Custom title displayed in the first row of the Statistics table.")
 string statisticsLocationInput = input.string("Bottom Right", "Statistics Location", options = ["Top Left", "Top Center", "Top Right", "Center Left", "Center Center", "Center Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = statisticsGroup)
 string statisticsTextSizeInput = input.string("small", "Statistics Text Size", options = ["tiny", "small", "normal"], group = statisticsGroup)
 bool showHelp = input.bool(false, "Show Help", group = helpGroup)
@@ -47,6 +53,8 @@ string statisticsPosition = statisticsLocationInput == "Top Left" ? position.top
 float statisticsRangeColumnWidth = statisticsTableWidth * 0.5
 float statisticsFrequencyColumnWidth = statisticsTableWidth * 0.25
 float statisticsProbabilityColumnWidth = statisticsTableWidth * 0.25
+int effectiveMidpointGuideCount = math.max(midpointGuideBoxCount, statisticsLookback)
+bool midpointGuideCountAdjusted = midpointGuideBoxCount < statisticsLookback
 float factor = 1.0 + brickPercentage / 100.0
 float upwardSource = calculationBasis == "High/Low" ? high : close
 float downwardSource = calculationBasis == "High/Low" ? low : close
@@ -106,6 +114,8 @@ color statisticsLowProbabilityValueColor = color.new(bearishColor, 15)
 var array<box> brickBoxes = array.new_box()
 var array<label> brickLabels = array.new_label()
 var array<box> activeBrickSegment = array.new_box()
+var array<line> midpointGuideLines = array.new_line()
+var array<line> activeMidpointGuideLines = array.new_line()
 var array<RenkoBoxRecord> completedBoxRecords = array.new<RenkoBoxRecord>()
 var array<RenkoBoxRecord> activeBoxRecords = array.new<RenkoBoxRecord>()
 var float initialPrice = na
@@ -114,7 +124,10 @@ var float brickClose = na
 var int direction = 0
 var table warningTable = table.new(position.bottom_center, 1, 1, frame_color = accentColor, frame_width = 1, border_color = accentColor, border_width = 1)
 var table helpTable = table.new(position.top_right, 1, 1, frame_color = accentColor, frame_width = 1, border_color = accentColor, border_width = 1)
-var table statisticsTable = table.new(position.bottom_right, 3, 54, frame_color = accentColor, frame_width = 1, border_color = accentColor, border_width = 1)
+var table statisticsTable = table.new(position.bottom_right, 3, 56, frame_color = accentColor, frame_width = 1, border_color = accentColor, border_width = 1)
+
+if barstate.isfirst
+    table.merge_cells(statisticsTable, 0, 0, 2, 0)
 
 finalizeActiveBoxRecords(int endBar) =>
     int activeRecordCount = array.size(activeBoxRecords)
@@ -128,6 +141,26 @@ finalizeActiveBoxRecords(int endBar) =>
                 array.shift(completedBoxRecords)
         array.clear(activeBoxRecords)
 
+finalizeActiveMidpointGuides(int endTime) =>
+    int activeGuideCount = array.size(activeMidpointGuideLines)
+    if activeGuideCount > 0
+        for activeGuideIndex = 0 to activeGuideCount - 1
+            line.set_x2(array.get(activeMidpointGuideLines, activeGuideIndex), endTime)
+        array.clear(activeMidpointGuideLines)
+
+drawMidpointGuide(float openPrice, float closePrice, color guideColor) =>
+    if showMidpointGuides
+        float midpointPrice = (openPrice + closePrice) / 2.0
+        line newMidpointGuide = line.new(x1 = time, y1 = midpointPrice, x2 = time_close, y2 = midpointPrice, xloc = xloc.bar_time, extend = extend.none, color = color.new(guideColor, midpointGuideLineOpacity), style = line.style_dotted, width = midpointGuideLineWidth)
+        array.push(midpointGuideLines, newMidpointGuide)
+        array.push(activeMidpointGuideLines, newMidpointGuide)
+        if array.size(midpointGuideLines) > effectiveMidpointGuideCount
+            line removedMidpointGuide = array.shift(midpointGuideLines)
+            int activeGuideIndex = array.indexof(activeMidpointGuideLines, removedMidpointGuide)
+            if activeGuideIndex >= 0
+                array.remove(activeMidpointGuideLines, activeGuideIndex)
+            line.delete(removedMidpointGuide)
+
 drawBrick(float openPrice, float closePrice, int brickDirection) =>
     color brickColor = brickDirection == 1 ? bullishColor : bearishColor
     color brickTextColor = contrastText(brickColor)
@@ -137,10 +170,12 @@ drawBrick(float openPrice, float closePrice, int brickDirection) =>
             box.set_right(array.get(activeBrickSegment, activeBoxIndex), bar_index)
         array.clear(activeBrickSegment)
         finalizeActiveBoxRecords(bar_index - 1)
+        finalizeActiveMidpointGuides(time)
     box newBox = box.new(left = bar_index, top = math.max(openPrice, closePrice), right = bar_index + 1, bottom = math.min(openPrice, closePrice), border_color = brickColor, border_width = 1, bgcolor = color.new(brickColor, 100 - renkoFillOpacity))
     array.push(brickBoxes, newBox)
     array.push(activeBrickSegment, newBox)
     array.push(activeBoxRecords, RenkoBoxRecord.new(bar_index, na, na, brickDirection))
+    drawMidpointGuide(openPrice, closePrice, brickColor)
     if array.size(brickBoxes) > 500
         box.delete(array.shift(brickBoxes))
     if showBrickLabels
@@ -159,6 +194,10 @@ if barstate.isconfirmed and boxSizeReady
         if activeBoxCount > 0
             for activeBoxIndex = 0 to activeBoxCount - 1
                 box.set_right(array.get(activeBrickSegment, activeBoxIndex), bar_index + 1)
+        int activeGuideCount = array.size(activeMidpointGuideLines)
+        if activeGuideCount > 0
+            for activeGuideIndex = 0 to activeGuideCount - 1
+                line.set_x2(array.get(activeMidpointGuideLines, activeGuideIndex), time_close)
         if direction == 0
             if upwardSource >= nextUp(initialPrice, activeBoxSize)
                 brickOpen := initialPrice
@@ -221,13 +260,18 @@ barcolor(candleColor, title = "Standard Chart Candles")
 if barstate.islast
     table.set_position(statisticsTable, statisticsPosition)
     if showStatistics
-        table.clear(statisticsTable, 0, 0, 2, 53)
+        table.clear(statisticsTable, 0, 0, 2, 55)
+        table.cell(statisticsTable, 0, 0, statisticsTableTitle, width = statisticsTableWidth, text_color = contrastText(accentColor), text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
         int completedRecordCount = array.size(completedBoxRecords)
         int statisticsSampleSize = math.min(statisticsLookback, completedRecordCount)
         if statisticsSampleSize == 0
-            table.cell(statisticsTable, 0, 0, "Candle Count Distribution", width = statisticsRangeColumnWidth, text_color = panelTextColor, text_size = statisticsTextSize, bgcolor = panelColor, text_halign = text.align_left)
-            table.cell(statisticsTable, 1, 0, "Waiting", width = statisticsFrequencyColumnWidth, text_color = panelTextColor, text_size = statisticsTextSize, bgcolor = panelColor, text_halign = text.align_center)
-            table.cell(statisticsTable, 2, 0, "", width = statisticsProbabilityColumnWidth, text_color = panelTextColor, text_size = statisticsTextSize, bgcolor = panelColor)
+            table.cell(statisticsTable, 0, 1, "Candle Count Distribution", width = statisticsRangeColumnWidth, text_color = panelTextColor, text_size = statisticsTextSize, bgcolor = panelColor, text_halign = text.align_left)
+            table.cell(statisticsTable, 1, 1, "Waiting", width = statisticsFrequencyColumnWidth, text_color = panelTextColor, text_size = statisticsTextSize, bgcolor = panelColor, text_halign = text.align_center)
+            table.cell(statisticsTable, 2, 1, "", width = statisticsProbabilityColumnWidth, text_color = panelTextColor, text_size = statisticsTextSize, bgcolor = panelColor)
+            if midpointGuideCountAdjusted
+                table.cell(statisticsTable, 0, 2, "Guide count", width = statisticsRangeColumnWidth, text_color = contrastText(accentColor), text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
+                table.cell(statisticsTable, 1, 2, str.tostring(midpointGuideBoxCount) + "<" + str.tostring(statisticsLookback), width = statisticsFrequencyColumnWidth, text_color = contrastText(accentColor), text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
+                table.cell(statisticsTable, 2, 2, "Adjusted", width = statisticsProbabilityColumnWidth, text_color = contrastText(accentColor), text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
         else
             int firstSampleIndex = completedRecordCount - statisticsSampleSize
             RenkoBoxRecord firstSampleRecord = array.get(completedBoxRecords, firstSampleIndex)
@@ -259,9 +303,9 @@ if barstate.islast
                 if distributionBinFrequency > 0
                     lowestOccupiedBinFrequency := math.min(lowestOccupiedBinFrequency, distributionBinFrequency)
             color statisticsHeaderTextColor = contrastText(accentColor)
-            table.cell(statisticsTable, 0, 0, "Candles\n(n=" + str.tostring(statisticsSampleSize) + ")", width = statisticsRangeColumnWidth, text_color = statisticsHeaderTextColor, text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
-            table.cell(statisticsTable, 1, 0, "Freq", width = statisticsFrequencyColumnWidth, text_color = statisticsHeaderTextColor, text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
-            table.cell(statisticsTable, 2, 0, "Prob", width = statisticsProbabilityColumnWidth, text_color = statisticsHeaderTextColor, text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
+            table.cell(statisticsTable, 0, 1, "Candles\n(n=" + str.tostring(statisticsSampleSize) + ")", width = statisticsRangeColumnWidth, text_color = statisticsHeaderTextColor, text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
+            table.cell(statisticsTable, 1, 1, "Freq", width = statisticsFrequencyColumnWidth, text_color = statisticsHeaderTextColor, text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
+            table.cell(statisticsTable, 2, 1, "Prob", width = statisticsProbabilityColumnWidth, text_color = statisticsHeaderTextColor, text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
             for binIndex = 0 to effectiveBinCount - 1
                 int binLower = int(math.ceil(minimumCandleCount + binIndex * binWidth))
                 int binUpper = binIndex == effectiveBinCount - 1 ? maximumCandleCount : int(math.ceil(minimumCandleCount + (binIndex + 1) * binWidth)) - 1
@@ -270,10 +314,10 @@ if barstate.islast
                 string binProbabilityText = str.tostring(binFrequency * 100.0 / statisticsSampleSize, "#.0") + "%"
                 color binBackgroundColor = binFrequency == highestBinFrequency ? statisticsHighProbabilityColor : panelColor
                 color binTextColor = binFrequency == highestBinFrequency ? statisticsHighProbabilityTextColor : panelTextColor
-                table.cell(statisticsTable, 0, binIndex + 1, binRangeText, width = statisticsRangeColumnWidth, text_color = binTextColor, text_size = statisticsTextSize, bgcolor = binBackgroundColor, text_halign = text.align_center)
-                table.cell(statisticsTable, 1, binIndex + 1, str.tostring(binFrequency), width = statisticsFrequencyColumnWidth, text_color = binTextColor, text_size = statisticsTextSize, bgcolor = binBackgroundColor, text_halign = text.align_center)
-                table.cell(statisticsTable, 2, binIndex + 1, binProbabilityText, width = statisticsProbabilityColumnWidth, text_color = binTextColor, text_size = statisticsTextSize, bgcolor = binBackgroundColor, text_halign = text.align_center)
-            int currentStatisticsRow = effectiveBinCount + 1
+                table.cell(statisticsTable, 0, binIndex + 2, binRangeText, width = statisticsRangeColumnWidth, text_color = binTextColor, text_size = statisticsTextSize, bgcolor = binBackgroundColor, text_halign = text.align_center)
+                table.cell(statisticsTable, 1, binIndex + 2, str.tostring(binFrequency), width = statisticsFrequencyColumnWidth, text_color = binTextColor, text_size = statisticsTextSize, bgcolor = binBackgroundColor, text_halign = text.align_center)
+                table.cell(statisticsTable, 2, binIndex + 2, binProbabilityText, width = statisticsProbabilityColumnWidth, text_color = binTextColor, text_size = statisticsTextSize, bgcolor = binBackgroundColor, text_halign = text.align_center)
+            int currentStatisticsRow = effectiveBinCount + 2
             int activeRecordCount = array.size(activeBoxRecords)
             if activeRecordCount > 0
                 RenkoBoxRecord currentBoxRecord = array.get(activeBoxRecords, 0)
@@ -305,15 +349,20 @@ if barstate.islast
             table.cell(statisticsTable, 0, directionSummaryRow, "Bull: " + str.tostring(bullishBoxCount), width = statisticsRangeColumnWidth, text_color = contrastText(bullishColor), text_size = statisticsTextSize, bgcolor = statisticsBullishSummaryColor, text_halign = text.align_center)
             table.cell(statisticsTable, 1, directionSummaryRow, "Bear: " + str.tostring(bearishBoxCount), width = statisticsFrequencyColumnWidth, text_color = contrastText(bearishColor), text_size = statisticsTextSize, bgcolor = statisticsBearishSummaryColor, text_halign = text.align_center)
             table.cell(statisticsTable, 2, directionSummaryRow, bullishBearishRatioText, width = statisticsProbabilityColumnWidth, text_color = bullishBearishRatioTextColor, text_size = statisticsTextSize, bgcolor = bullishBearishRatioColor, text_halign = text.align_center)
+            if midpointGuideCountAdjusted
+                int midpointGuideWarningRow = directionSummaryRow + 1
+                table.cell(statisticsTable, 0, midpointGuideWarningRow, "Guide count", width = statisticsRangeColumnWidth, text_color = contrastText(accentColor), text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
+                table.cell(statisticsTable, 1, midpointGuideWarningRow, str.tostring(midpointGuideBoxCount) + "<" + str.tostring(statisticsLookback), width = statisticsFrequencyColumnWidth, text_color = contrastText(accentColor), text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
+                table.cell(statisticsTable, 2, midpointGuideWarningRow, "Adjusted", width = statisticsProbabilityColumnWidth, text_color = contrastText(accentColor), text_size = statisticsTextSize, bgcolor = accentColor, text_halign = text.align_center)
     else
-        table.clear(statisticsTable, 0, 0, 2, 53)
+        table.clear(statisticsTable, 0, 0, 2, 55)
     if showWarning
         table.cell(warningTable, 0, 0, "Use this indicator as a supporting tool, not as the primary basis for trading decisions.", width = 30, text_color = panelTextColor, text_size = size.small, bgcolor = panelColor, text_halign = text.align_center)
     else
         table.clear(warningTable, 0, 0, 0, 0)
     table.set_position(helpTable, helpPosition)
     if showHelp
-        string helpText = "True Percentage Renko\nBuilds confirmed Renko bricks over standard candles.\n\nChoose Percentage for compounding bricks, Absolute for fixed price-unit bricks, ATR Multiple for ATR-based sizing, or Standard Deviation for close-volatility sizing. Adaptive sizes update on each confirmed bar.\n\nInputs\nBox Size Type: Percentage, Absolute, ATR, or deviation\nPercentage / Absolute: selected fixed sizing value\nATR: length and multiplier\nDeviation: close length and 1x, 2x, or 3x multiplier\nBasis: High/Low or Close\nReversal: 1 or 2 bricks\nStatistics: current probability is bullish for the most frequent occupied bin, bearish for the least frequent, and accent otherwise; B/B uses bullish above 1, bearish below 1\nCandles: visible, dimmed, or hidden\nPalette: applies to all visuals"
+        string helpText = "True Percentage Renko\nBuilds confirmed Renko bricks over standard candles.\n\nChoose Percentage for compounding bricks, Absolute for fixed price-unit bricks, ATR Multiple for ATR-based sizing, or Standard Deviation for close-volatility sizing. Adaptive sizes update on each confirmed bar.\n\nInputs\nBox Size Type: Percentage, Absolute, ATR, or deviation\nPercentage / Absolute: selected fixed sizing value\nATR: length and multiplier\nDeviation: close length and 1x, 2x, or 3x multiplier\nBasis: High/Low or Close\nReversal: 1 or 2 bricks\nMidpoint Guides: dotted visual-price midpoints; the retained count includes the developing box and cannot be below the Statistics lookback\nStatistics: current probability is bullish for the most frequent occupied bin, bearish for the least frequent, and accent otherwise; B/B uses bullish above 1, bearish below 1\nCandles: visible, dimmed, or hidden\nPalette: applies to all visuals"
         table.cell(helpTable, 0, 0, helpText, width = 30, text_color = panelTextColor, text_size = helpTextSize, bgcolor = panelColor, text_halign = text.align_left)
     else
         table.clear(helpTable, 0, 0, 0, 0)
